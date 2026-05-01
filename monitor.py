@@ -46,6 +46,7 @@ def parse_lines(text: str):
     results = []
     for line in text.splitlines():
         line = line.strip()
+        line = line.replace('**', '').replace('__', '')
         if not line:
             continue
         m = CLOSE_RE.search(line)
