@@ -69,7 +69,7 @@ alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: datetime.m
 
 async def send_alert(http: aiohttp.ClientSession, text: str):
     url     = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": ALERT_GROUP_ID, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": ALERT_GROUP_ID, "text": text, "parse_mode": "HTML"}
     try:
         async with http.post(url, json=payload) as resp:
             if resp.status != 200:
