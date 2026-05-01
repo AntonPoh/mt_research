@@ -1,9 +1,5 @@
 """
 Telegram Trade Monitor — Telethon версия для Railway
-=====================================================
-Читает сообщения из торговых групп от имени пользователя (Telethon).
-Считает суммарный ROE % по монетам за 30 минут.
-Шлёт алерт в группу когда монета набирает >= 1.5%.
 """
 
 import os
@@ -14,38 +10,22 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+import aiohttp
 
-# ─────────────────────────────────────────
-#  НАСТРОЙКИ — переменные окружения Railway
-# ─────────────────────────────────────────
-
-API_ID         = int(os.environ.get("API_ID", "0"))
-API_HASH       = os.environ.get("API_HASH", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-BOT_TOKEN      = os.environ.get("BOT_TOKEN", "")
-ALERT_GROUP_ID = int(os.environ.get("ALERT_GROUP_ID", "0"))
-ALERT_THRESHOLD = float(os.environ.get("ALERT_THRESHOLD", "1.5"))
-WINDOW_MINUTES  = int(os.environ.get("WINDOW_MINUTES", "30"))
+API_ID           = int(os.environ.get("API_ID", "0"))
+API_HASH         = os.environ.get("API_HASH", "")
+SESSION_STRING   = os.environ.get("SESSION_STRING", "")
+BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
+ALERT_GROUP_ID   = int(os.environ.get("ALERT_GROUP_ID", "0"))
+ALERT_THRESHOLD  = float(os.environ.get("ALERT_THRESHOLD", "1.5"))
+WINDOW_MINUTES   = int(os.environ.get("WINDOW_MINUTES", "30"))
 COOLDOWN_MINUTES = int(os.environ.get("COOLDOWN_MINUTES", "30"))
-
-# ID торговых групп (через запятую в переменной окружения)
-# Пример: GROUPS=-1002422661504,-1003600846314,...
-GROUPS_ENV = os.environ.get("GROUPS", "")
-GROUPS = [int(g.strip()) for g in GROUPS_ENV.split(",") if g.strip()]
-
-# ─────────────────────────────────────────
-#  ЛОГИРОВАНИЕ
-# ─────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────
-#  ПАРСИНГ
-# ─────────────────────────────────────────
 
 CLOSE_RE = re.compile(
     r"(?:Profit|Loss)"
@@ -77,35 +57,24 @@ def parse_lines(text: str):
     return results
 
 
-# ─────────────────────────────────────────
-#  СОСТОЯНИЕ
-# ─────────────────────────────────────────
-
 trades  = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: datetime.min)))
 
-# ─────────────────────────────────────────
-#  ОТПРАВКА АЛЕРТОВ через Bot API
-# ─────────────────────────────────────────
 
-import aiohttp
-
-async def send_alert(session: aiohttp.ClientSession, text: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+async def send_alert(http: aiohttp.ClientSession, text: str):
+    url     = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": ALERT_GROUP_ID, "text": text, "parse_mode": "Markdown"}
     try:
-        async with session.post(url, json=payload) as resp:
+        async with http.post(url, json=payload) as resp:
             if resp.status != 200:
-                body = await resp.text()
-                log.error(f"Ошибка отправки: {resp.status} {body}")
+                log.error(f"Ошибка отправки: {resp.status} {await resp.text()}")
     except Exception as e:
         log.error(f"send_alert error: {e}")
 
 
 def format_alert(account, symbol, total_pct, group_title, records):
     sign   = "+" if total_pct >= 0 else ""
-    now    = datetime.utcnow()
-    cutoff = now - timedelta(minutes=WINDOW_MINUTES)
+    cutoff = datetime.utcnow() - timedelta(minutes=WINDOW_MINUTES)
     recent = [(ts, p) for ts, p in records if ts >= cutoff]
     lines  = [
         f"🚨 *Алерт по монете*", f"",
@@ -121,42 +90,34 @@ def format_alert(account, symbol, total_pct, group_title, records):
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────
-#  ОСНОВНОЙ КОД
-# ─────────────────────────────────────────
-
 async def main():
-    http_session = aiohttp.ClientSession()
-
-    client = TelegramClient(
-        StringSession(SESSION_STRING), API_ID, API_HASH
-    )
-
+    http = aiohttp.ClientSession()
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.start()
     log.info("✅ Клиент запущен")
 
-    # Подключаем группы
-    for group_id in GROUPS:
-        try:
-            entity = await client.get_entity(group_id)
-            title  = getattr(entity, "title", str(group_id))
-            log.info(f"  📡 Подключено: {title} (id={group_id})")
-        except Exception as e:
-            log.error(f"  ❌ Не удалось подключить {group_id}: {e}")
+    # Получаем все диалоги и фильтруем нужные группы
+    group_entities = []
+    async for dialog in client.iter_dialogs():
+        log.info(f"  Диалог: {dialog.name} (id={dialog.id})")
+        group_entities.append(dialog.entity)
 
-    @client.on(events.NewMessage(chats=GROUPS))
+    log.info(f"🔍 Всего диалогов: {len(group_entities)}")
+
+    # Слушаем ВСЕ входящие сообщения и фильтруем по наличию Profit/Loss
+    @client.on(events.NewMessage())
     async def handler(event):
         text        = event.message.text or ""
         group_title = getattr(event.chat, "title", str(event.chat_id))
 
-        if not text:
+        if "Profit" not in text and "Loss" not in text:
             return
 
         parsed = parse_lines(text)
         if not parsed:
             return
 
-        now = datetime.utcnow()
+        now     = datetime.utcnow()
         chat_id = event.chat_id
 
         for account, symbol, pct in parsed:
@@ -184,11 +145,11 @@ async def main():
             text_alert = format_alert(account, symbol, total, group_title,
                                        trades[chat_id][account][symbol])
             log.info(f"  → 🚨 АЛЕРТ: {symbol} {total:+.2f}% [{account}] [{group_title}]")
-            await send_alert(http_session, text_alert)
+            await send_alert(http, text_alert)
 
     log.info(f"🔍 Мониторинг запущен | порог {ALERT_THRESHOLD}% за {WINDOW_MINUTES} мин")
     await client.run_until_disconnected()
-    await http_session.close()
+    await http.close()
 
 
 if __name__ == "__main__":
