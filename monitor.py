@@ -21,6 +21,11 @@ ALERT_THRESHOLD  = float(os.environ.get("ALERT_THRESHOLD", "1.5"))
 WINDOW_MINUTES   = int(os.environ.get("WINDOW_MINUTES", "30"))
 COOLDOWN_MINUTES = int(os.environ.get("COOLDOWN_MINUTES", "30"))
 
+# Названия групп через запятую
+# Пример: GROUPS_NAMES=BBT_1,BBT_2,BBT_3,BIN_1,BIN_2
+GROUPS_NAMES_ENV = os.environ.get("GROUPS_NAMES", "")
+GROUPS_NAMES = [g.strip() for g in GROUPS_NAMES_ENV.split(",") if g.strip()]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -91,26 +96,30 @@ def format_alert(account, symbol, total_pct, group_title, records):
 
 
 async def main():
-    http = aiohttp.ClientSession()
+    http   = aiohttp.ClientSession()
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.start()
     log.info("✅ Клиент запущен")
 
-    # Получаем все диалоги и фильтруем нужные группы
-    group_entities = []
+    # Находим группы по названию
+    group_ids = []
     async for dialog in client.iter_dialogs():
-        log.info(f"  Диалог: {dialog.name} (id={dialog.id})")
-        group_entities.append(dialog.entity)
+        if dialog.name in GROUPS_NAMES:
+            group_ids.append(dialog.id)
+            log.info(f"  📡 Найдена группа: {dialog.name} (id={dialog.id})")
 
-    log.info(f"🔍 Всего диалогов: {len(group_entities)}")
+    if not group_ids:
+        log.error("❌ Ни одна группа не найдена! Проверь GROUPS_NAMES")
+        return
 
-    # Слушаем ВСЕ входящие сообщения и фильтруем по наличию Profit/Loss
-    @client.on(events.NewMessage())
+    log.info(f"✅ Подключено групп: {len(group_ids)}")
+
+    @client.on(events.NewMessage(chats=group_ids))
     async def handler(event):
         text        = event.message.text or ""
         group_title = getattr(event.chat, "title", str(event.chat_id))
 
-        if "Profit" not in text and "Loss" not in text:
+        if not text:
             return
 
         parsed = parse_lines(text)
