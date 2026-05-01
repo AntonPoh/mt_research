@@ -117,6 +117,7 @@ async def main():
     @client.on(events.NewMessage(chats=group_ids))
     async def handler(event):
         log.info(f"НОВОЕ СООБЩЕНИЕ: chat={event.chat_id}")
+        log.info(f"ТЕКСТ: {repr(text[:200])}")
         text        = event.message.text or ""
         group_title = getattr(event.chat, "title", str(event.chat_id))
 
