@@ -42,14 +42,14 @@ log = logging.getLogger(__name__)
 #  ПАРСИНГ СООБЩЕНИЙ
 # ─────────────────────────────────────────
 
-# Пример:
-# anton_t3_bbt-001, SG_L_BUY_0.90_0.40_tp0.70_sl_TEST: ⬇ Loss -0.02$ (-2.3%) (U) #AKEUSDT sold 62500 x 0.000319 (-0.1%)
-# Берём ROE% = первый процент после суммы (-2.3%), НЕ последний (-0.1%)
+# Примеры строк:
+# anton_t3_bbt-004, SG_L_BUY_0.70_0.40_tp0.50_sl_TEST: ⬆ Profit +0.04$ (+7.5%) (U) #RAVEUSDT sold 21 x 0.708 (+0.3%)
+# anton_t3_bbt-004, SG_L_BUY_0.70_0.40_tp0.50_sl_TEST: ⬇ Loss -0.08$ (-12.0%) (U) #ZBTUSDT sold 83.8 x 0.178 (-0.5%)
 
 CLOSE_RE = re.compile(
-    r"(?:Profit|Loss)"          # тип закрытия
-    r"\s+[+-]?[\d.]+\$?"       # сумма в долларах: -0.02$
-    r"\s+\(([+-][\d.]+)%\)",   # ROE % — первый процент: group(1)
+    r"(?:Profit|Loss)"              # тип закрытия
+    r"\s+[+-]?[\d.]+\$?"           # сумма в долларах: +0.04$
+    r"\s+\(([+-]?[\d.]+)%\)",      # ROE % — первый процент: group(1)
     re.IGNORECASE,
 )
 
@@ -57,29 +57,33 @@ SYMBOL_RE  = re.compile(r"#(\w+)", re.IGNORECASE)
 ACCOUNT_RE = re.compile(r"^([^,]+),")
 
 
-def parse_close(text: str):
-    """Возвращает (account, symbol, pct) или None."""
-    clean = text.strip()
+def parse_lines(text: str):
+    """
+    Разбивает многострочное сообщение на строки и парсит каждую.
+    Возвращает список (account, symbol, pct).
+    """
+    results = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
 
-    # Только сообщения о закрытии
-    m = CLOSE_RE.search(clean)
-    if not m:
-        return None
+        m = CLOSE_RE.search(line)
+        if not m:
+            continue
 
-    # Аккаунт
-    acc_m   = ACCOUNT_RE.match(clean)
-    account = acc_m.group(1).strip() if acc_m else "unknown"
+        acc_m   = ACCOUNT_RE.match(line)
+        account = acc_m.group(1).strip() if acc_m else "unknown"
 
-    # Символ монеты
-    sym_m = SYMBOL_RE.search(clean)
-    if not sym_m:
-        return None
-    symbol = sym_m.group(1).upper()
+        sym_m = SYMBOL_RE.search(line)
+        if not sym_m:
+            continue
+        symbol = sym_m.group(1).upper()
 
-    # ROE % (первый процент = результат сделки)
-    pct = float(m.group(1))
+        pct = float(m.group(1))
+        results.append((account, symbol, pct))
 
-    return account, symbol, pct
+    return results
 
 
 # ─────────────────────────────────────────
@@ -149,38 +153,44 @@ async def process_update(update: dict, session: aiohttp.ClientSession):
     if not text or not chat_id:
         return
 
-    result = parse_close(text)
-    if result is None:
+    # Парсим все строки сообщения
+    parsed = parse_lines(text)
+    if not parsed:
         return
 
-    account, symbol, pct = result
     now = datetime.utcnow()
 
-    trades[chat_id][account][symbol].append((now, pct))
+    for account, symbol, pct in parsed:
+        trades[chat_id][account][symbol].append((now, pct))
 
-    cutoff2 = now - timedelta(minutes=WINDOW_MINUTES * 2)
-    trades[chat_id][account][symbol] = [
-        (ts, p) for ts, p in trades[chat_id][account][symbol] if ts >= cutoff2
-    ]
+        # Чистим старые записи
+        cutoff2 = now - timedelta(minutes=WINDOW_MINUTES * 2)
+        trades[chat_id][account][symbol] = [
+            (ts, p) for ts, p in trades[chat_id][account][symbol] if ts >= cutoff2
+        ]
 
-    cutoff = now - timedelta(minutes=WINDOW_MINUTES)
-    total  = sum(p for ts, p in trades[chat_id][account][symbol] if ts >= cutoff)
+        # Суммарный % за окно
+        cutoff = now - timedelta(minutes=WINDOW_MINUTES)
+        total  = sum(p for ts, p in trades[chat_id][account][symbol] if ts >= cutoff)
 
-    log.info(f"[{group_title}] {account} | {symbol} {pct:+.1f}% | окно: {total:+.2f}%")
+        log.info(f"[{group_title}] {account} | {symbol} {pct:+.1f}% | окно: {total:+.2f}%")
 
-    if total < ALERT_THRESHOLD:
-        return
+        # Проверяем порог
+        if total < ALERT_THRESHOLD:
+            continue
 
-    last = alerted[chat_id][account][symbol]
-    if now - last < timedelta(minutes=COOLDOWN_MINUTES):
-        log.info(f"  → кулдаун {symbol}, пропускаем")
-        return
+        # Проверяем кулдаун
+        last = alerted[chat_id][account][symbol]
+        if now - last < timedelta(minutes=COOLDOWN_MINUTES):
+            log.info(f"  → кулдаун {symbol}, пропускаем")
+            continue
 
-    alerted[chat_id][account][symbol] = now
-    text_alert = format_alert(account, symbol, total, group_title,
-                               trades[chat_id][account][symbol])
-    log.info(f"  → 🚨 АЛЕРТ: {symbol} {total:+.2f}% [{account}] [{group_title}]")
-    await send_alert(session, text_alert)
+        # Шлём алерт
+        alerted[chat_id][account][symbol] = now
+        text_alert = format_alert(account, symbol, total, group_title,
+                                   trades[chat_id][account][symbol])
+        log.info(f"  → 🚨 АЛЕРТ: {symbol} {total:+.2f}% [{account}] [{group_title}]")
+        await send_alert(session, text_alert)
 
 
 # ─────────────────────────────────────────
