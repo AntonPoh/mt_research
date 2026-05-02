@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 
 CLOSE_RE = re.compile(
     r"(?:Profit|Loss)"
-    r"\s+[+-]?[\d.]+\$?"
-    r"\s+\(([+-]?[\d.]+)%\)",
+    r".+?"
+    r"\(([+-]?[\d.]+)%\)\s*'?\s*$",
     re.IGNORECASE,
 )
 SYMBOL_RE  = re.compile(r"#(\w+)", re.IGNORECASE)
