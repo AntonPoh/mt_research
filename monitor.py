@@ -65,7 +65,7 @@ def parse_lines(text: str):
 
 # trades[chat_id][account][symbol][side] = [(ts, pct), ...]
 trades  = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
-alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: datetime.min)))
+alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))))
 
 
 async def send_message(http: aiohttp.ClientSession, text: str):
