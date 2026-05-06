@@ -1,6 +1,6 @@
 """
 Telegram Trade Monitor — Telethon версия для Railway
-Считает только TEST ордера, разделяет лонг/шорт.
+Лонг и шорт считаются независимо.
 """
 
 import os
@@ -22,8 +22,12 @@ ALERT_THRESHOLD      = float(os.environ.get("ALERT_THRESHOLD", "1.5"))
 ALERT_THRESHOLD_NEG  = float(os.environ.get("ALERT_THRESHOLD_NEG", "-1.5"))
 WINDOW_MINUTES       = int(os.environ.get("WINDOW_MINUTES", "1440"))
 COOLDOWN_MINUTES     = int(os.environ.get("COOLDOWN_MINUTES", "120"))
-GROUPS_NAMES_ENV     = os.environ.get("GROUPS_NAMES", "")
-GROUPS_NAMES         = [g.strip() for g in GROUPS_NAMES_ENV.split(",") if g.strip()]
+
+GROUPS_NAMES_ENV = os.environ.get("GROUPS_NAMES", "")
+GROUPS_NAMES     = [g.strip() for g in GROUPS_NAMES_ENV.split(",") if g.strip()]
+
+GROUPS_IDS_ENV = os.environ.get("GROUPS_IDS", "")
+GROUPS_IDS     = [int(g.strip()) for g in GROUPS_IDS_ENV.split(",") if g.strip()]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +43,6 @@ SIDE_RE    = re.compile(r"SG_[A-Z]_(BUY|SELL)_", re.IGNORECASE)
 
 
 def parse_lines(text: str):
-    """Парсит строки — только TEST сделки. Возвращает (account, symbol, side, pct)."""
     results = []
     for line in text.splitlines():
         line = line.strip().replace('**', '').replace('__', '')
@@ -64,8 +67,12 @@ def parse_lines(text: str):
 
 
 # trades[chat_id][account][symbol][side] = [(ts, pct), ...]
-trades  = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
-alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))))
+trades = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
+
+# alerted[chat_id][account][symbol][side] = datetime
+alerted = defaultdict(lambda: defaultdict(lambda: defaultdict(
+    lambda: defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))
+)))
 
 
 async def send_message(http: aiohttp.ClientSession, text: str):
@@ -80,71 +87,51 @@ async def send_message(http: aiohttp.ClientSession, text: str):
 
 
 def calc_stats(records):
-    """Считает суммарный % и winrate по списку записей."""
     total = sum(p for _, p in records)
     wins  = sum(1 for _, p in records if p > 0)
     wr    = round(wins / len(records) * 100) if records else 0
     return total, len(records), wr
 
 
-def format_alert(account, symbol, group_title, long_rec, short_rec, total_pct, is_positive):
-    sign   = "+" if total_pct >= 0 else ""
-    header = "🟢 ДОБАВИТЬ НА РАБОЧИЙ ОРДЕР" if is_positive else "🔴 УБРАТЬ С ТЕСТОВОГО ОРДЕРА"
+def format_alert(account, symbol, group_title, side, records, total_pct, is_positive):
+    sign      = "+" if total_pct >= 0 else ""
+    side_name = "📈 Лонг" if side == "BUY" else "📉 Шорт"
+    _, cnt, wr = calc_stats(records)
 
-    long_total,  long_cnt,  long_wr  = calc_stats(long_rec)
-    short_total, short_cnt, short_wr = calc_stats(short_rec)
+    if is_positive:
+        header = f"🟢 ДОБАВИТЬ {side_name.upper()} НА РАБОЧИЙ ОРДЕР"
+    else:
+        header = f"🔴 УБРАТЬ {side_name.upper()} С ТЕСТОВОГО ОРДЕРА"
 
     lines = [
         header, "",
         f"Аккаунт: {account}",
         f"Группа: {group_title}",
         f"Монета: #{symbol}",
-        f"Суммарный % за день: {sign}{total_pct:.2f}%", "",
+        f"{side_name}: {sign}{total_pct:.2f}% ({cnt} сд, WR {wr}%)",
+        "", "Сделки:",
     ]
-
-    if long_cnt > 0:
-        ls = "+" if long_total >= 0 else ""
-        lines.append(f"📈 Лонг: {ls}{long_total:.2f}% ({long_cnt} сд, WR {long_wr}%)")
-        for ts, p in long_rec[-5:]:
-            e = "✅" if p > 0 else "❌"
-            s = "+" if p >= 0 else ""
-            lines.append(f"   {e} {ts.strftime('%H:%M')} {s}{p:.2f}%")
-
-    if short_cnt > 0:
-        ss = "+" if short_total >= 0 else ""
-        lines.append(f"📉 Шорт: {ss}{short_total:.2f}% ({short_cnt} сд, WR {short_wr}%)")
-        for ts, p in short_rec[-5:]:
-            e = "✅" if p > 0 else "❌"
-            s = "+" if p >= 0 else ""
-            lines.append(f"   {e} {ts.strftime('%H:%M')} {s}{p:.2f}%")
-
+    for ts, p in records[-10:]:
+        e = "✅" if p > 0 else "❌"
+        s = "+" if p >= 0 else ""
+        lines.append(f"  {e} {ts.strftime('%H:%M')} {s}{p:.2f}%")
     return "\n".join(lines)
 
 
 def process_trade(chat_id, account, symbol, side, pct, ts):
-    """Добавляет сделку и возвращает суммарный % за окно по всем сторонам."""
     trades[chat_id][account][symbol][side].append((ts, pct))
-
     cutoff2 = ts - timedelta(minutes=WINDOW_MINUTES * 2)
-    for s in ["BUY", "SELL"]:
-        trades[chat_id][account][symbol][s] = [
-            (t, p) for t, p in trades[chat_id][account][symbol][s] if t >= cutoff2
-        ]
-
+    trades[chat_id][account][symbol][side] = [
+        (t, p) for t, p in trades[chat_id][account][symbol][side] if t >= cutoff2
+    ]
     cutoff = ts - timedelta(minutes=WINDOW_MINUTES)
-    total  = sum(
-        p for s in ["BUY", "SELL"]
-        for t, p in trades[chat_id][account][symbol][s] if t >= cutoff
-    )
+    total  = sum(p for t, p in trades[chat_id][account][symbol][side] if t >= cutoff)
     return total
 
 
-def get_records(chat_id, account, symbol):
-    """Возвращает записи лонг/шорт за окно."""
+def get_records(chat_id, account, symbol, side):
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=WINDOW_MINUTES)
-    long_rec  = [(t, p) for t, p in trades[chat_id][account][symbol]["BUY"]  if t >= cutoff]
-    short_rec = [(t, p) for t, p in trades[chat_id][account][symbol]["SELL"] if t >= cutoff]
-    return long_rec, short_rec
+    return [(t, p) for t, p in trades[chat_id][account][symbol][side] if t >= cutoff]
 
 
 async def load_history(client, group_ids):
@@ -177,17 +164,27 @@ async def main():
     await client.start()
     log.info("✅ Клиент запущен")
 
-    group_ids = []
-    async for dialog in client.iter_dialogs():
-        if dialog.name in GROUPS_NAMES and dialog.id not in group_ids:
-            group_ids.append(dialog.id)
-            log.info(f"  📡 {dialog.name} (id={dialog.id})")
+    group_ids = list(GROUPS_IDS)
+
+    if GROUPS_NAMES:
+        async for dialog in client.iter_dialogs():
+            if dialog.name in GROUPS_NAMES and dialog.id not in group_ids:
+                group_ids.append(dialog.id)
+                log.info(f"  📡 {dialog.name} (id={dialog.id})")
+
+    for gid in GROUPS_IDS:
+        try:
+            entity = await client.get_entity(gid)
+            title  = getattr(entity, "title", str(gid))
+            log.info(f"  📡 {title} (id={gid})")
+        except Exception as e:
+            log.error(f"  ❌ Не удалось получить {gid}: {e}")
 
     if not group_ids:
-        log.error("❌ Группы не найдены!")
+        log.error("❌ Группы/каналы не найдены!")
         return
 
-    log.info(f"✅ Подключено групп: {len(group_ids)}")
+    log.info(f"✅ Подключено: {len(group_ids)}")
     log.info("📚 Загружаем историю за сегодня...")
     await load_history(client, group_ids)
 
@@ -208,26 +205,27 @@ async def main():
 
         for account, symbol, side, pct in parsed:
             total = process_trade(chat_id, account, symbol, side, pct, now)
-            log.info(f"[{group_title}] {account} | {symbol} {side} {pct:+.2f}% | день: {total:+.2f}%")
+            log.info(f"[{group_title}] {account} | {symbol} {side} {pct:+.2f}% | {side} день: {total:+.2f}%")
 
-            last = alerted[chat_id][account][symbol]
+            # Кулдаун отдельно для каждого side
+            last = alerted[chat_id][account][symbol][side]
             if now - last < timedelta(minutes=COOLDOWN_MINUTES):
                 continue
 
+            records = get_records(chat_id, account, symbol, side)
+
             if total >= ALERT_THRESHOLD:
-                alerted[chat_id][account][symbol] = now
-                long_rec, short_rec = get_records(chat_id, account, symbol)
+                alerted[chat_id][account][symbol][side] = now
                 text_alert = format_alert(account, symbol, group_title,
-                                          long_rec, short_rec, total, True)
-                log.info(f"  → 🟢 ДОБАВИТЬ: {symbol} {total:+.2f}%")
+                                          side, records, total, True)
+                log.info(f"  → 🟢 ДОБАВИТЬ {side}: {symbol} {total:+.2f}%")
                 await send_message(http, text_alert)
 
             elif total <= ALERT_THRESHOLD_NEG:
-                alerted[chat_id][account][symbol] = now
-                long_rec, short_rec = get_records(chat_id, account, symbol)
+                alerted[chat_id][account][symbol][side] = now
                 text_alert = format_alert(account, symbol, group_title,
-                                          long_rec, short_rec, total, False)
-                log.info(f"  → 🔴 УБРАТЬ: {symbol} {total:+.2f}%")
+                                          side, records, total, False)
+                log.info(f"  → 🔴 УБРАТЬ {side}: {symbol} {total:+.2f}%")
                 await send_message(http, text_alert)
 
     log.info(f"🔍 Мониторинг TEST ордеров | +{ALERT_THRESHOLD}% / {ALERT_THRESHOLD_NEG}%")
