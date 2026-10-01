@@ -34,7 +34,7 @@ log = logging.getLogger("screener")
 density = DensityTracker(
     min_usd=float(os.environ.get("DENSITY_MIN_USD", "300000")),
     mult=float(os.environ.get("DENSITY_MULT", "8")),
-    max_dist_pct=float(os.environ.get("DENSITY_MAX_DIST_PCT", "3")),
+    max_dist_pct=float(os.environ.get("DENSITY_MAX_DIST_PCT", "2")),
 )
 ticks = TickDetector(
     big_usd=float(os.environ.get("TICK_BIG_USD", "250000")),
@@ -52,7 +52,7 @@ events: deque = deque(maxlen=300)
 clients: set[web.WebSocketResponse] = set()
 alerted: dict[tuple, float] = {}
 vol24: dict[str, float] = {}
-DENSITY_VOL_FRAC = float(os.environ.get("DENSITY_VOL_FRAC", "0.0005"))   # доля суточного оборота
+DENSITY_VOL_FRAC = float(os.environ.get("DENSITY_VOL_FRAC", "0.001"))   # доля суточного оборота
 DENSITY_FLOOR    = float(os.environ.get("DENSITY_FLOOR_USD", "150000"))
 
 
@@ -152,6 +152,11 @@ async def algo_loop(http):
         rows = [r for t in algos.values() for r in t.snapshot()]
         rows.sort(key=lambda r: r["score"], reverse=True)
         app_state["algos"] = rows[:150]
+        app_state["n"] = app_state.get("n", 0) + 1
+        if app_state["n"] % 12 == 0:
+            log.info("algos: total=%d active=%d twap=%d | hl series=%d bn series=%d", len(rows),
+                     sum(r["active"] for r in rows), sum(r["kind"] == "twap" for r in rows),
+                     len(algos["hl"].series), len(algos["bn"].series))
         await broadcast({"kind": "algos", "rows": app_state["algos"]})
         for r in rows:
             key = (r["venue"], r["symbol"], r["actor"], r["side"])
