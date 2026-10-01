@@ -91,15 +91,28 @@ async def top_symbols(http) -> list[str]:
 
 async def ticks_loop(http, symbols):
     streams = "/".join(f"{s.lower()}@aggTrade" for s in symbols)
-    url = f"{WSS}/stream?streams={streams}"
+    # Binance разделил фьючерсные WS-эндпоинты (/market, /public); подбираем рабочий,
+    # если за 15с нет ни одного сообщения - переходим к следующему варианту.
+    bases = [os.environ["BINANCE_WS_PATH"]] if os.environ.get("BINANCE_WS_PATH") else ["/market", "", "/public"]
+    idx = 0
     while True:
+        url = f"{WSS}{bases[idx % len(bases)]}/stream?streams={streams}"
         try:
             async with http.ws_connect(url, heartbeat=20) as ws:
-                log.info("ticks connected (%d symbols)", len(symbols))
-                async for m in ws:
+                log.info("ticks connecting %s", url.split("?")[0])
+                first = True
+                while True:
+                    m = await ws.receive(timeout=15 if first else 60)
+                    if m.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                        raise ConnectionError(f"ws closed: {m.type}")
                     if m.type != aiohttp.WSMsgType.TEXT:
                         continue
-                    d = json.loads(m.data)["data"]
+                    if first:
+                        first = False
+                        log.info("ticks OK via '%s' (%d symbols)", bases[idx % len(bases)], len(symbols))
+                    d = json.loads(m.data).get("data")
+                    if not d or "p" not in d:
+                        continue
                     usd = float(d["p"]) * float(d["q"])
                     cnt["bn"] += 1
                     if usd >= ALGO_MIN_PRINT:
@@ -113,7 +126,9 @@ async def ticks_loop(http, symbols):
                             await telegram(http, f"⚡ {ev['symbol']} всплеск ${ev['usd']:,} "
                                                  f"(buy {ev['buy_pct']}%) @ {ev['price']}")
         except Exception as e:
-            log.error("ticks ws error: %s; reconnect in 3s", e)
+            log.error("ticks ws '%s' failed: %r; next endpoint in 3s", bases[idx % len(bases)], e)
+            if cnt["bn"] == 0:
+                idx += 1       # переключаем вариант только пока данных ещё не было
             await asyncio.sleep(3)
 
 

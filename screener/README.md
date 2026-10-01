@@ -23,3 +23,5 @@ MetaScalp: дашборд сам находит локальный API (127.0.0.
 `BINANCE_REST` / `BINANCE_WS` — если регион Railway блокируется Binance, можно подменить хост.
 
 Тесты: `python -m pytest tests`. Root directory сервиса на Railway: `screener`.
+
+`BINANCE_WS_PATH` — принудительный путь WS-эндпоинта (`/market`, `/public` или пусто); по умолчанию перебирается автоматически.
