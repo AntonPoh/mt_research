@@ -48,6 +48,7 @@ algos = {
     "bn": AlgoTracker(gap_s=0.5, min_slices=8, min_total_usd=100_000, ttl_s=900),
 }
 algo_alerted: dict[tuple, float] = {}
+cnt = {"bn": 0, "bn_algo": 0, "hl": 0}
 events: deque = deque(maxlen=300)
 clients: set[web.WebSocketResponse] = set()
 alerted: dict[tuple, float] = {}
@@ -100,7 +101,9 @@ async def ticks_loop(http, symbols):
                         continue
                     d = json.loads(m.data)["data"]
                     usd = float(d["p"]) * float(d["q"])
+                    cnt["bn"] += 1
                     if usd >= ALGO_MIN_PRINT:
+                        cnt["bn_algo"] += 1
                         algos["bn"].feed("bn", d["s"], f"q{d['q']}", "sell" if d["m"] else "buy",
                                          d["T"] / 1000, usd, float(d["p"]))
                     for ev in ticks.on_trade(d["s"], float(d["p"]), float(d["q"]), d["m"], d["T"] / 1000):
@@ -143,6 +146,7 @@ async def depth_loop(http, symbols):
 
 
 async def hl_on_trade(coin, actor, side, usd, price, ts):
+    cnt["hl"] += 1
     algos["hl"].feed("hl", coin, actor, side, ts, usd, price)
 
 
@@ -154,6 +158,7 @@ async def algo_loop(http):
         app_state["algos"] = rows[:150]
         app_state["n"] = app_state.get("n", 0) + 1
         if app_state["n"] % 12 == 0:
+            log.info("flow: bn trades=%d (>=min %d) hl trades=%d", cnt["bn"], cnt["bn_algo"], cnt["hl"])
             log.info("algos: total=%d active=%d twap=%d | hl series=%d bn series=%d", len(rows),
                      sum(r["active"] for r in rows), sum(r["kind"] == "twap" for r in rows),
                      len(algos["hl"].series), len(algos["bn"].series))
