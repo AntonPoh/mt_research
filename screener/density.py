@@ -43,7 +43,7 @@ class DensityTracker:
         self.active: dict[tuple, Level] = {}
         self.stats: dict[str, SymbolStats] = {}
 
-    def update(self, symbol: str, bids, asks, now: float | None = None):
+    def update(self, symbol: str, bids, asks, now: float | None = None, min_usd: float | None = None):
         """bids/asks: списки (price, qty). Возвращает список новых плотностей."""
         now = time.time() if now is None else now
         if not bids or not asks:
@@ -54,7 +54,7 @@ class DensityTracker:
         for side, book in (("bid", bids), ("ask", asks)):
             usd = [(p, p * q) for p, q in book]
             med = median(u for _, u in usd) or 1.0
-            thr = max(self.min_usd, med * self.mult)
+            thr = max(min_usd if min_usd is not None else self.min_usd, med * self.mult)
             for p, u in usd:
                 dist = abs(p - mid) / mid * 100
                 if dist > self.max_dist_pct or u < thr:

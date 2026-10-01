@@ -2,40 +2,203 @@
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Scalp Screener</title>
 <style>
-:root{--bg:#0e1116;--fg:#d7dde5;--mut:#7d8794;--g:#2ecc71;--r:#ff5c5c;--b:#1b212b}
+:root{--bg:#0e1116;--fg:#d7dde5;--mut:#7d8794;--g:#2ecc71;--r:#ff5c5c;--b:#1b212b;--a:#4da3ff;--y:#f5c542}
+*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:13px ui-monospace,Menlo,monospace}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}
+header{display:flex;gap:12px;align-items:center;padding:8px 12px;background:#141922;flex-wrap:wrap}
+header b{color:var(--a)}
+.grid{display:grid;grid-template-columns:1.1fr 1fr 1.2fr;gap:12px;padding:12px}
+@media(max-width:1200px){.grid{grid-template-columns:1fr 1fr}}
 @media(max-width:800px){.grid{grid-template-columns:1fr}}
-.card{background:var(--b);border-radius:8px;padding:10px;max-height:85vh;overflow:auto}
-h2{margin:0 0 8px;font-size:14px;color:var(--mut)}
-table{width:100%;border-collapse:collapse}td,th{padding:3px 6px;text-align:right}
-th{color:var(--mut);font-weight:normal}td:first-child,th:first-child{text-align:left}
-.bid,.buy{color:var(--g)}.ask,.sell{color:var(--r)}
-.row{padding:3px 0;border-bottom:1px solid #222a35}
+.card{background:var(--b);border-radius:8px;padding:10px;max-height:82vh;overflow:auto}
+.card h2{margin:0 0 6px;font-size:14px;color:var(--mut);display:flex;justify-content:space-between;gap:6px}
+.card h2 span.n{color:var(--fg)}
+.flt{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;color:var(--mut);align-items:center}
+input[type=number],input[type=text],select{background:#0e1116;color:var(--fg);border:1px solid #2a3340;border-radius:4px;padding:2px 4px;width:80px;font:inherit}
+input[type=text]{width:110px}
+label{white-space:nowrap}
+table{width:100%;border-collapse:collapse}td,th{padding:3px 5px;text-align:right;white-space:nowrap}
+th{color:var(--mut);font-weight:normal;position:sticky;top:0;background:var(--b)}
+td:first-child,th:first-child{text-align:left}
+tr.clk{cursor:pointer}tr.clk:hover{background:#232b37}
+.bid,.buy,.pos{color:var(--g)}.ask,.sell,.neg{color:var(--r)}.dim{color:var(--mut)}.twap{color:var(--y)}
+.row{padding:3px 0;border-bottom:1px solid #222a35;cursor:pointer}
+details{margin:0 12px 12px;background:var(--b);border-radius:8px;padding:8px 10px}
+summary{cursor:pointer;color:var(--a)}
+#ms{font-weight:bold}.ok{color:var(--g)}.bad{color:var(--r)}
 </style></head><body>
+<header>
+ <b>SCALP SCREENER</b>
+ <span id="conn" class="dim">WS: …</span>
+ <span>MetaScalp: <span id="ms" class="bad">нет связи</span></span>
+ <label><input type="checkbox" id="sound"> звук</label>
+</header>
+
+<details open><summary>MetaScalp: автооткрытие стаканов</summary>
+ <div class="flt" style="margin-top:8px">
+  <label>Биржа-префикс <input type="text" id="prefix" value="BINANCE"></label>
+  <label>Суффикс рынка <input type="text" id="suffix" value=".p" style="width:50px"></label>
+  <label>Binding (линк-группа 001–500) <input type="text" id="binding" value="001" style="width:60px"></label>
+  <label>Пауза между открытиями, с <input type="number" id="gap" value="10"></label>
+  <label>Кулдаун на монету, с <input type="number" id="coin_cd" value="120"></label>
+  <button id="msretry">Найти MetaScalp</button>
+ </div>
+ <div class="flt">
+  <label><input type="checkbox" id="ao_tick"> авто: тики (всплеск/крупный ≥ $ <input type="number" id="ao_tick_usd" value="500000">)</label>
+  <label><input type="checkbox" id="ao_den"> авто: новая плотность (score ≥ <input type="number" id="ao_den_score" value="5" step="0.5">)</label>
+  <label><input type="checkbox" id="ao_twap"> авто: новый TWAP (≥ $ <input type="number" id="ao_twap_usd" value="150000">)</label>
+  <label><input type="checkbox" id="ao_feed"> дублировать в ленту MetaScalp</label>
+ </div>
+ <div class="dim">Клик по любой строке открывает монету вручную. API MetaScalp локальный (127.0.0.1:17845–17855); браузер может запросить разрешение на доступ к локальной сети.</div>
+</details>
+
 <div class="grid">
- <div class="card"><h2>Плотности (по рангу)</h2>
-  <table><thead><tr><th>Монета</th><th>Сторона</th><th>Цена</th><th>$</th><th>Жизнь</th><th>Q</th><th>Score</th></tr></thead>
-  <tbody id="d"></tbody></table></div>
- <div class="card"><h2>Тиковые события</h2><div id="t"></div></div>
+ <div class="card"><h2>Плотности <span class="n" id="d_n"></span></h2>
+  <div class="flt">
+   <label>мин $ <input type="number" id="d_min" value="0"></label>
+   <label>мин Q <input type="number" id="d_q" value="0" step="0.1" min="0" max="1"></label>
+   <label>сторона <select id="d_side"><option value="">все</option><option>bid</option><option>ask</option></select></label>
+   <label>макс дист % <input type="number" id="d_dist" value="3" step="0.1"></label>
+  </div>
+  <table><thead><tr><th>Монета</th><th>Ст.</th><th>Цена</th><th>$</th><th>Жизнь</th><th>Q</th><th>Score</th></tr></thead><tbody id="d"></tbody></table></div>
+
+ <div class="card"><h2>Тиковые события <span class="n" id="t_n"></span></h2>
+  <div class="flt"><label>мин $ <input type="number" id="t_min" value="0"></label></div>
+  <div id="t"></div></div>
+
+ <div class="card"><h2>Алго / TWAP <span class="n" id="a_n"></span></h2>
+  <div class="flt">
+   <label>тип <select id="a_kind"><option value="">все</option><option>twap</option><option>periodic</option></select></label>
+   <label>биржа <select id="a_venue"><option value="">все</option><option value="hl">Hyperliquid</option><option value="bn">Binance</option></select></label>
+   <label><input type="checkbox" id="a_active" checked> только активные</label>
+   <label><input type="checkbox" id="a_hide" checked> скрыть «без эффекта» (|impact| &lt; <input type="number" id="a_imp" value="2" step="0.5"> bps)</label>
+  </div>
+  <table><thead><tr><th>Монета</th><th>Ст.</th><th>Тип</th><th>Кошелёк</th><th>Всего $</th><th>Слайс</th><th>Инт.</th><th>Impact</th><th>Score</th></tr></thead><tbody id="a"></tbody></table></div>
 </div>
+
 <script>
-const q=location.search, fmt=n=>n.toLocaleString('en-US');
-const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'+q);
-ws.onmessage=e=>{
- const m=JSON.parse(e.data);
- if(m.kind==='density'){
-  document.getElementById('d').innerHTML=m.rows.map(r=>
-   `<tr><td>${r.symbol}</td><td class="${r.side}">${r.side}</td><td>${r.price}</td><td>${fmt(r.usd)}</td>
-    <td>${Math.floor(r.life_s/60)}м</td><td>${r.quality}</td><td>${r.score}</td></tr>`).join('');
- } else if(m.kind==='tick'){
-  const ev=m.event, d=document.createElement('div'); d.className='row';
-  const t=new Date(ev.ts*1000).toLocaleTimeString();
-  d.innerHTML= ev.type==='big'
-   ? `${t} <b>${ev.symbol}</b> <span class="${ev.side}">${ev.side}</span> $${fmt(ev.usd)} @ ${ev.price}`
-   : `${t} ⚡ <b>${ev.symbol}</b> всплеск $${fmt(ev.usd)} (buy ${ev.buy_pct}%)`;
-  const box=document.getElementById('t'); box.prepend(d);
-  while(box.children.length>200) box.lastChild.remove();
+const $=id=>document.getElementById(id), fmt=n=>Number(n).toLocaleString('en-US');
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const qs=location.search;
+
+// ---------- настройки в localStorage ----------
+const KEYS=['prefix','suffix','binding','gap','coin_cd','ao_tick','ao_tick_usd','ao_den','ao_den_score','ao_twap','ao_twap_usd','ao_feed',
+ 'd_min','d_q','d_side','d_dist','t_min','a_kind','a_venue','a_active','a_hide','a_imp','sound'];
+function load(){try{const s=JSON.parse(localStorage.getItem('scr')||'{}');
+ for(const k of KEYS){if(!(k in s))continue;const e=$(k);if(e.type==='checkbox')e.checked=s[k];else e.value=s[k];}}catch(e){}}
+function save(){try{const s={};for(const k of KEYS){const e=$(k);s[k]=e.type==='checkbox'?e.checked:e.value;}
+ localStorage.setItem('scr',JSON.stringify(s));}catch(e){}}
+const val=k=>{const e=$(k);return e.type==='checkbox'?e.checked:(e.type==='number'?Number(e.value):e.value)};
+load();
+document.addEventListener('change',()=>{save();renderAll();});
+
+// ---------- MetaScalp ----------
+let msBase=null, msConn=null, lastOpen=0; const coinOpen={};
+async function msFind(){
+ $('ms').textContent='поиск…';$('ms').className='dim';
+ for(let p=17845;p<=17855;p++){
+  try{
+   const ctl=new AbortController();setTimeout(()=>ctl.abort(),700);
+   const r=await fetch(`http://127.0.0.1:${p}/ping`,{signal:ctl.signal});
+   const j=await r.json();
+   if(j.app==='MetaScalp'){msBase=`http://127.0.0.1:${p}`;
+    try{const c=await (await fetch(msBase+'/api/connections')).json();
+        const arr=Array.isArray(c)?c:(c.connections||c.items||[]);
+        msConn=arr.length?(arr[0].id??arr[0].Id):null;}catch(e){}
+    $('ms').textContent=`OK :${p} v${j.version}`;$('ms').className='ok';return;}
+  }catch(e){}
  }
-};
+ msBase=null;$('ms').textContent='нет связи';$('ms').className='bad';
+}
+async function msOpen(symbol,why,manual){
+ if(!msBase)return;
+ const now=Date.now();
+ if(!manual){
+  if(now-lastOpen<val('gap')*1000)return;
+  if(now-(coinOpen[symbol]||0)<val('coin_cd')*1000)return;
+ }
+ lastOpen=now;coinOpen[symbol]=now;
+ const body={TickerPattern:`${val('prefix')}:${symbol}${val('suffix')}`};
+ if(val('binding'))body.Binding=val('binding');
+ try{
+  await fetch(msBase+'/api/change-ticker',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(val('ao_feed')&&msConn!=null&&why){
+   await fetch(msBase+'/api/notifications',{method:'POST',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({ConnectionId:msConn,Ticker:symbol,EventType:why,Time:new Date().toISOString()})});}
+ }catch(e){$('ms').textContent='ошибка запроса';$('ms').className='bad';}
+}
+$('msretry').onclick=msFind; msFind(); setInterval(()=>{if(!msBase)msFind();},30000);
+
+// ---------- звук ----------
+let ac=null;
+function beep(f=880){if(!val('sound'))return;try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+ const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.08);}catch(e){}}
+
+// ---------- данные ----------
+let density=[], algos=[], ticks=[]; const seenDen=new Set(), seenTwap=new Set();
+const binSym=(venue,sym)=>venue==='hl'?sym+'USDT':sym;
+
+function renderDensity(){
+ const rows=density.filter(r=>r.usd>=val('d_min')&&r.quality>=val('d_q')&&r.dist_pct<=val('d_dist')&&(!val('d_side')||r.side===val('d_side')));
+ $('d_n').textContent=rows.length;
+ $('d').innerHTML=rows.slice(0,80).map(r=>`<tr class="clk" data-s="${esc(r.symbol)}" data-w="density">
+  <td>${esc(r.symbol)}</td><td class="${r.side}">${r.side}</td><td>${r.price}</td><td>${fmt(r.usd)}</td>
+  <td>${Math.floor(r.life_s/60)}м</td><td>${r.quality}</td><td>${r.score}</td></tr>`).join('');
+}
+function renderAlgos(){
+ const rows=algos.filter(r=>(!val('a_kind')||r.kind===val('a_kind'))&&(!val('a_venue')||r.venue===val('a_venue'))
+   &&(!val('a_active')||r.active)&&(!val('a_hide')||Math.abs(r.impact_bps)>=val('a_imp')));
+ $('a_n').textContent=rows.length;
+ $('a').innerHTML=rows.slice(0,80).map(r=>`<tr class="clk" data-s="${esc(binSym(r.venue,r.symbol))}" data-w="algo">
+  <td>${esc(r.symbol)}<span class="dim"> ${r.venue}</span></td><td class="${r.side}">${r.side}</td>
+  <td class="${r.kind==='twap'?'twap':''}">${r.kind}</td>
+  <td class="dim">${r.venue==='hl'?esc(r.actor.slice(0,6)+'…'+r.actor.slice(-4)):'—'}</td>
+  <td>${fmt(r.total_usd)}</td><td>${fmt(r.slice_usd)}</td><td>${r.interval_s}с</td>
+  <td class="${r.impact_bps>=0?'pos':'neg'}">${r.impact_bps}</td><td>${r.score}</td></tr>`).join('');
+}
+function addTick(ev){
+ const el=document.createElement('div');el.className='row';el.dataset.s=ev.symbol;el.dataset.w='tick';
+ const t=new Date(ev.ts*1000).toLocaleTimeString();
+ el.innerHTML=ev.type==='big'
+  ?`${t} <b>${esc(ev.symbol)}</b> <span class="${ev.side}">${ev.side}</span> $${fmt(ev.usd)} @ ${ev.price}`
+  :`${t} ⚡ <b>${esc(ev.symbol)}</b> всплеск $${fmt(ev.usd)} (buy ${ev.buy_pct}%)`;
+ el._usd=ev.usd;
+ const box=$('t');box.prepend(el);while(box.children.length>200)box.lastChild.remove();
+ applyTickFilter();
+}
+function applyTickFilter(){let n=0;for(const el of $('t').children){const ok=el._usd>=val('t_min');el.style.display=ok?'':'none';if(ok)n++;}$('t_n').textContent=n;}
+function renderAll(){renderDensity();renderAlgos();applyTickFilter();}
+
+document.addEventListener('click',e=>{const el=e.target.closest('[data-s]');if(el)msOpen(el.dataset.s,'manual:'+el.dataset.w,true);});
+
+function onDensity(rows){
+ density=rows;renderDensity();
+ for(const r of rows){const k=r.symbol+r.side+r.price;
+  if(seenDen.has(k))continue;seenDen.add(k);
+  if(initialDone&&r.score>=val('ao_den_score')){beep(660);if(val('ao_den'))msOpen(r.symbol,`Плотность ${r.side} $${fmt(r.usd)}`);}}
+}
+function onAlgos(rows){
+ algos=rows;renderAlgos();
+ for(const r of rows){if(r.kind!=='twap'||!r.active)continue;
+  const k=r.venue+r.symbol+r.actor+r.side;
+  if(seenTwap.has(k)||r.total_usd<val('ao_twap_usd'))continue;seenTwap.add(k);
+  if(initialDone){beep(520);if(val('ao_twap'))msOpen(binSym(r.venue,r.symbol),`TWAP ${r.side} $${fmt(r.total_usd)}`);}}
+}
+let initialDone=false; setTimeout(()=>initialDone=true,4000);
+
+// ---------- WebSocket ----------
+function connect(){
+ const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'+qs);
+ ws.onopen=()=>{$('conn').textContent='WS: online';$('conn').className='ok';};
+ ws.onclose=()=>{$('conn').textContent='WS: reconnect…';$('conn').className='bad';setTimeout(connect,2000);};
+ ws.onmessage=e=>{
+  const m=JSON.parse(e.data);
+  if(m.kind==='density')onDensity(m.rows);
+  else if(m.kind==='algos')onAlgos(m.rows);
+  else if(m.kind==='tick'){addTick(m.event);
+   if(initialDone&&m.event.usd>=val('ao_tick_usd')){beep(1000);if(val('ao_tick'))
+     msOpen(m.event.symbol,m.event.type==='big'?`Крупный ${m.event.side} $${fmt(m.event.usd)}`:`Всплеск $${fmt(m.event.usd)}`);}}
+ };
+}
+connect();
 </script></body></html>
