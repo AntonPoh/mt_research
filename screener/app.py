@@ -1,0 +1,177 @@
+"""Scalp screener: Binance Futures ticks + density -> web dashboard + Telegram."""
+
+import asyncio
+import json
+import logging
+import os
+import time
+from collections import deque
+
+import aiohttp
+from aiohttp import web
+
+from density import DensityTracker
+from ticks import TickDetector
+
+PORT            = int(os.environ.get("PORT", "8080"))
+SYMBOLS_N       = int(os.environ.get("SYMBOLS_N", "20"))
+DEPTH_EVERY_S   = float(os.environ.get("DEPTH_EVERY_S", "10"))
+DEPTH_LIMIT     = int(os.environ.get("DEPTH_LIMIT", "500"))
+BOT_TOKEN       = os.environ.get("BOT_TOKEN", "")
+ALERT_CHAT_ID   = os.environ.get("ALERT_CHAT_ID", "")
+ALERT_MIN_SCORE = float(os.environ.get("ALERT_MIN_SCORE", "3.0"))
+AUTH_TOKEN      = os.environ.get("AUTH_TOKEN", "")   # если задан: /?token=...
+REST            = os.environ.get("BINANCE_REST", "https://fapi.binance.com")
+WSS             = os.environ.get("BINANCE_WS", "wss://fstream.binance.com")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("screener")
+
+density = DensityTracker(
+    min_usd=float(os.environ.get("DENSITY_MIN_USD", "300000")),
+    mult=float(os.environ.get("DENSITY_MULT", "8")),
+    max_dist_pct=float(os.environ.get("DENSITY_MAX_DIST_PCT", "3")),
+)
+ticks = TickDetector(
+    big_usd=float(os.environ.get("TICK_BIG_USD", "250000")),
+    burst_min_usd=float(os.environ.get("TICK_BURST_USD", "400000")),
+)
+events: deque = deque(maxlen=300)
+clients: set[web.WebSocketResponse] = set()
+alerted: dict[tuple, float] = {}
+
+
+async def broadcast(msg: dict):
+    data = json.dumps(msg)
+    for ws in list(clients):
+        try:
+            await ws.send_str(data)
+        except Exception:
+            clients.discard(ws)
+
+
+async def telegram(http: aiohttp.ClientSession, text: str):
+    if not (BOT_TOKEN and ALERT_CHAT_ID):
+        return
+    try:
+        async with http.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                             json={"chat_id": ALERT_CHAT_ID, "text": text}) as r:
+            if r.status != 200:
+                log.error("telegram %s %s", r.status, await r.text())
+    except Exception as e:
+        log.error("telegram error: %s", e)
+
+
+async def top_symbols(http) -> list[str]:
+    async with http.get(f"{REST}/fapi/v1/ticker/24hr") as r:
+        data = await r.json()
+    usdt = [d for d in data if d["symbol"].endswith("USDT")]
+    usdt.sort(key=lambda d: float(d["quoteVolume"]), reverse=True)
+    return [d["symbol"] for d in usdt[:SYMBOLS_N]]
+
+
+async def ticks_loop(http, symbols):
+    streams = "/".join(f"{s.lower()}@aggTrade" for s in symbols)
+    url = f"{WSS}/stream?streams={streams}"
+    while True:
+        try:
+            async with http.ws_connect(url, heartbeat=20) as ws:
+                log.info("ticks connected (%d symbols)", len(symbols))
+                async for m in ws:
+                    if m.type != aiohttp.WSMsgType.TEXT:
+                        continue
+                    d = json.loads(m.data)["data"]
+                    for ev in ticks.on_trade(d["s"], float(d["p"]), float(d["q"]), d["m"], d["T"] / 1000):
+                        events.append(ev)
+                        await broadcast({"kind": "tick", "event": ev})
+                        if ev["type"] == "burst":
+                            await telegram(http, f"⚡ {ev['symbol']} всплеск ${ev['usd']:,} "
+                                                 f"(buy {ev['buy_pct']}%) @ {ev['price']}")
+        except Exception as e:
+            log.error("ticks ws error: %s; reconnect in 3s", e)
+            await asyncio.sleep(3)
+
+
+async def depth_loop(http, symbols):
+    while True:
+        started = time.time()
+        for sym in symbols:
+            try:
+                async with http.get(f"{REST}/fapi/v1/depth",
+                                    params={"symbol": sym, "limit": DEPTH_LIMIT}) as r:
+                    if r.status != 200:
+                        log.warning("depth %s -> %s", sym, r.status)
+                        continue
+                    d = await r.json()
+                bids = [(float(p), float(q)) for p, q in d["bids"]]
+                asks = [(float(p), float(q)) for p, q in d["asks"]]
+                for lv in density.update(sym, bids, asks):
+                    key = (lv.symbol, lv.side, lv.price)
+                    row = next((x for x in density.ranked() if (x["symbol"], x["side"], x["price"]) == key), None)
+                    if row and row["score"] >= ALERT_MIN_SCORE and time.time() - alerted.get(key, 0) > 1800:
+                        alerted[key] = time.time()
+                        await telegram(http, f"🧱 {lv.symbol} {lv.side.upper()} ${lv.usd:,.0f} "
+                                             f"@ {lv.price} (score {row['score']}, q {row['quality']})")
+            except Exception as e:
+                log.error("depth %s: %s", sym, e)
+            await asyncio.sleep(DEPTH_EVERY_S / max(len(symbols), 1))
+        await broadcast({"kind": "density", "rows": density.ranked()})
+        log.info("depth cycle %.1fs, active=%d", time.time() - started, len(density.active))
+
+
+def authorized(req: web.Request) -> bool:
+    return not AUTH_TOKEN or req.query.get("token") == AUTH_TOKEN
+
+
+async def index(req):
+    if not authorized(req):
+        return web.Response(status=401, text="unauthorized")
+    return web.FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+
+
+async def state(req):
+    if not authorized(req):
+        return web.Response(status=401, text="unauthorized")
+    return web.json_response({"density": density.ranked(), "ticks": list(events)[-100:]})
+
+
+async def ws_handler(req):
+    if not authorized(req):
+        return web.Response(status=401, text="unauthorized")
+    ws = web.WebSocketResponse(heartbeat=20)
+    await ws.prepare(req)
+    clients.add(ws)
+    await ws.send_str(json.dumps({"kind": "density", "rows": density.ranked()}))
+    try:
+        async for _ in ws:
+            pass
+    finally:
+        clients.discard(ws)
+    return ws
+
+
+async def on_start(app):
+    http = aiohttp.ClientSession()
+    app["http"] = http
+    symbols = await top_symbols(http)
+    log.info("symbols: %s", ",".join(symbols))
+    app["tasks"] = [asyncio.create_task(ticks_loop(http, symbols)),
+                    asyncio.create_task(depth_loop(http, symbols))]
+
+
+async def on_stop(app):
+    for t in app["tasks"]:
+        t.cancel()
+    await app["http"].close()
+
+
+def make_app():
+    app = web.Application()
+    app.add_routes([web.get("/", index), web.get("/api/state", state), web.get("/ws", ws_handler)])
+    app.on_startup.append(on_start)
+    app.on_cleanup.append(on_stop)
+    return app
+
+
+if __name__ == "__main__":
+    web.run_app(make_app(), port=PORT)

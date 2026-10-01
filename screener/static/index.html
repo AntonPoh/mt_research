@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scalp Screener</title>
+<style>
+:root{--bg:#0e1116;--fg:#d7dde5;--mut:#7d8794;--g:#2ecc71;--r:#ff5c5c;--b:#1b212b}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px ui-monospace,Menlo,monospace}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.card{background:var(--b);border-radius:8px;padding:10px;max-height:85vh;overflow:auto}
+h2{margin:0 0 8px;font-size:14px;color:var(--mut)}
+table{width:100%;border-collapse:collapse}td,th{padding:3px 6px;text-align:right}
+th{color:var(--mut);font-weight:normal}td:first-child,th:first-child{text-align:left}
+.bid,.buy{color:var(--g)}.ask,.sell{color:var(--r)}
+.row{padding:3px 0;border-bottom:1px solid #222a35}
+</style></head><body>
+<div class="grid">
+ <div class="card"><h2>Плотности (по рангу)</h2>
+  <table><thead><tr><th>Монета</th><th>Сторона</th><th>Цена</th><th>$</th><th>Жизнь</th><th>Q</th><th>Score</th></tr></thead>
+  <tbody id="d"></tbody></table></div>
+ <div class="card"><h2>Тиковые события</h2><div id="t"></div></div>
+</div>
+<script>
+const q=location.search, fmt=n=>n.toLocaleString('en-US');
+const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'+q);
+ws.onmessage=e=>{
+ const m=JSON.parse(e.data);
+ if(m.kind==='density'){
+  document.getElementById('d').innerHTML=m.rows.map(r=>
+   `<tr><td>${r.symbol}</td><td class="${r.side}">${r.side}</td><td>${r.price}</td><td>${fmt(r.usd)}</td>
+    <td>${Math.floor(r.life_s/60)}м</td><td>${r.quality}</td><td>${r.score}</td></tr>`).join('');
+ } else if(m.kind==='tick'){
+  const ev=m.event, d=document.createElement('div'); d.className='row';
+  const t=new Date(ev.ts*1000).toLocaleTimeString();
+  d.innerHTML= ev.type==='big'
+   ? `${t} <b>${ev.symbol}</b> <span class="${ev.side}">${ev.side}</span> $${fmt(ev.usd)} @ ${ev.price}`
+   : `${t} ⚡ <b>${ev.symbol}</b> всплеск $${fmt(ev.usd)} (buy ${ev.buy_pct}%)`;
+  const box=document.getElementById('t'); box.prepend(d);
+  while(box.children.length>200) box.lastChild.remove();
+ }
+};
+</script></body></html>
